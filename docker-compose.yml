@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  # Backend API
+  backend:
+    build: ./backend
+    container_name: family-hub-backend
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - JWT_SECRET=${JWT_SECRET}
+      - NODE_ENV=production
+    volumes:
+      - ./backend/data:/app/data
+    restart: unless-stopped
+    networks:
+      - family-hub-network
+
+  # Frontend Web
+  frontend:
+    build: ./frontend
+    container_name: family-hub-frontend
+    ports:
+      - "3000:80"
+    environment:
+      - REACT_APP_API_URL=http://localhost:3001/api
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - family-hub-network
+
+  # Cloudflare Tunnel (opcjonalne)
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: family-hub-tunnel
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    depends_on:
+      - backend
+      - frontend
+    restart: unless-stopped
+    networks:
+      - family-hub-network
+
+networks:
+  family-hub-network:
+    driver: bridge
+
+volumes:
+  db-data:
