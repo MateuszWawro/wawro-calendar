@@ -24,23 +24,9 @@ services:
     ports:
       - "3000:80"
     environment:
-      - REACT_APP_API_URL=http://localhost:3001/api
+      - REACT_APP_API_URL=http://family.wawro.ovh/api
     depends_on:
       - backend
-    restart: unless-stopped
-    networks:
-      - family-hub-network
-
-  # Cloudflare Tunnel (opcjonalne)
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: family-hub-tunnel
-    command: tunnel --no-autoupdate run
-    environment:
-      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
-    depends_on:
-      - backend
-      - frontend
     restart: unless-stopped
     networks:
       - family-hub-network
