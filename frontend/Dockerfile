@@ -40,7 +40,7 @@ RUN echo 'server { \
     \
     # --- Proxy backend API --- \
     location /api/ { \
-        proxy_pass http://localhost:3001; \
+        proxy_pass http://family-hub-backend:3001; \
         proxy_http_version 1.1; \
         proxy_set_header Host $host; \
         proxy_set_header X-Real-IP $remote_addr; \
