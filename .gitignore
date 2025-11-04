@@ -1,0 +1,5 @@
+# Ignoruj pliki środowiskowe
+.env
+
+# Ignoruj katalog z danymi
+data/
