@@ -63,16 +63,28 @@ function Calendar({ apiUrl, members }) {
   };
 
   const handleEditEvent = (event) => {
-    setFormData({
-      title: event.title,
-      description: event.description || '',
-      eventDate: event.event_date,
-      eventTime: event.event_time || '',
-      userId: event.user_id
-    });
-    setEditingEvent(event);
-    setShowModal(true);
-  };
+  // Pobierz aktualnego użytkownika z localStorage
+  const currentUser = JSON.parse(localStorage.getItem('user'));
+  
+  // Sprawdź czy użytkownik może edytować (jest twórcą LUB adminem)
+  const createdBy = event.created_by || event.user_id; // fallback
+  const canEdit = createdBy === currentUser.id || currentUser.role === 'admin';
+  
+  if (!canEdit) {
+    alert('Nie masz uprawnień do edycji tego wydarzenia. Może je edytować tylko osoba która je utworzyła.');
+    return;
+  }
+  
+  setFormData({
+    title: event.title,
+    description: event.description || '',
+    eventDate: event.event_date,
+    eventTime: event.event_time || '',
+    userId: event.user_id
+  });
+  setEditingEvent(event);
+  setShowModal(true);
+};
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -100,15 +112,20 @@ function Calendar({ apiUrl, members }) {
   };
 
   const handleDeleteEvent = async (eventId) => {
-    if (window.confirm('Czy na pewno chcesz usunąć to wydarzenie?')) {
-      try {
-        await axios.delete(`${apiUrl}/events/${eventId}`);
-        fetchEvents();
-      } catch (error) {
-        console.error('Error deleting event:', error);
+  if (window.confirm('Czy na pewno chcesz usunąć to wydarzenie?')) {
+    try {
+      await axios.delete(`${apiUrl}/events/${eventId}`);
+      fetchEvents();
+    } catch (error) {
+      console.error('Error deleting event:', error);
+      if (error.response?.status === 403) {
+        alert('Nie masz uprawnień do usunięcia tego wydarzenia. Może je usunąć tylko osoba która je utworzyła.');
+      } else {
+        alert('Błąd podczas usuwania wydarzenia');
       }
     }
-  };
+  }
+};
 
   const renderCalendar = () => {
     const { daysInMonth, startingDayOfWeek, year, month } = getDaysInMonth();
@@ -118,7 +135,7 @@ function Calendar({ apiUrl, members }) {
       'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień'
     ];
     const dayNames = ['Nd', 'Pn', 'Wt', 'Śr', 'Czw', 'Pt', 'Sb'];
-
+    const currentUser = JSON.parse(localStorage.getItem('user'));
     // Empty cells before month starts
     for (let i = 0; i < startingDayOfWeek; i++) {
       days.push(<div key={`empty-${i}`} className="calendar-day empty"></div>);
@@ -126,55 +143,70 @@ function Calendar({ apiUrl, members }) {
 
     // Days of the month
     for (let day = 1; day <= daysInMonth; day++) {
-      const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      const dayEvents = events.filter(e => e.event_date === dateStr);
-      const isToday = 
-        day === new Date().getDate() &&
-        month === new Date().getMonth() &&
-        year === new Date().getFullYear();
+    const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const dayEvents = events.filter(e => e.event_date === dateStr);
+    const isToday = 
+      day === new Date().getDate() &&
+      month === new Date().getMonth() &&
+      year === new Date().getFullYear();
 
-      days.push(
-        <div
-          key={day}
-          className={`calendar-day ${isToday ? 'today' : ''}`}
-          onClick={() => handleAddEvent(day)}
-        >
-          <div className="day-number">{day}</div>
-          <div className="day-events">
-            {dayEvents.map(event => {
-              const member = members.find(m => m.id === event.user_id);
-              return (
-                <div
-                  key={event.id}
-                  className="event-item"
-                  style={{ borderLeftColor: member?.color || '#3b82f6' }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleEditEvent(event);
-                  }}
-                >
-                  {event.event_time && (
-                    <span className="event-time">{event.event_time}</span>
-                  )}
-                  <span className="event-title">{event.title}</span>
+    days.push(
+      <div
+        key={day}
+        className={`calendar-day ${isToday ? 'today' : ''}`}
+        onClick={() => handleAddEvent(day)}
+      >
+        <div className="day-number">{day}</div>
+        <div className="day-events">
+          {dayEvents.map(event => {
+            const member = members.find(m => m.id === event.user_id);
+            const createdBy = event.created_by || event.user_id;
+            const canEdit = createdBy === currentUser.id || currentUser.role === 'admin';
+            
+            return (
+              <div
+                key={event.id}
+                className="event-item"
+                style={{ borderLeftColor: member?.color || '#3b82f6' }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleEditEvent(event);
+                }}
+              >
+                {event.event_time && (
+                  <span className="event-time">{event.event_time}</span>
+                )}
+                <span className="event-title">{event.title}</span>
+                
+                {/* Pokazuj przycisk usuń TYLKO jeśli użytkownik ma uprawnienia */}
+                {canEdit && (
                   <button
                     className="event-delete"
                     onClick={(e) => {
                       e.stopPropagation();
                       handleDeleteEvent(event.id);
                     }}
+                    title="Usuń wydarzenie"
                   >
                     <X size={12} />
                   </button>
-                </div>
-              );
-            })}
-          </div>
+                )}
+                
+                {/* Opcjonalnie: pokaż kto utworzył */}
+                {event.created_by_name && (
+                  <span className="event-creator" title={`Utworzył: ${event.created_by_name}`}>
+                    👤
+                  </span>
+                )}
+              </div>
+            );
+          })}
         </div>
-      );
-    }
+      </div>
+    );
+  }
 
-    return (
+  return (
       <div className="calendar-container">
         <div className="calendar-header">
           <button onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1))}>

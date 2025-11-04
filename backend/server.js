@@ -54,18 +54,20 @@ function initDatabase() {
 
     // Events table
     db.run(`CREATE TABLE IF NOT EXISTS events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      family_id INTEGER NOT NULL,
-      user_id INTEGER NOT NULL,
-      title TEXT NOT NULL,
-      description TEXT,
-      event_date DATE NOT NULL,
-      event_time TIME,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (family_id) REFERENCES families(id),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    )`);
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  family_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  created_by INTEGER,
+  title TEXT NOT NULL,
+  description TEXT,
+  event_date DATE NOT NULL,
+  event_time TIME,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (family_id) REFERENCES families(id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+)`);
 
     // Shopping lists table
     db.run(`CREATE TABLE IF NOT EXISTS shopping_lists (
@@ -366,9 +368,13 @@ app.get('/api/events', authenticateToken, (req, res) => {
   const { month, year } = req.query;
   
   let query = `
-    SELECT e.*, u.name as user_name, u.color as user_color 
+    SELECT e.*, 
+           u.name as user_name, 
+           u.color as user_color,
+           creator.name as created_by_name
     FROM events e 
     JOIN users u ON e.user_id = u.id 
+    LEFT JOIN users creator ON e.created_by = creator.id
     WHERE e.family_id = ?
   `;
   
@@ -397,8 +403,8 @@ app.post('/api/events', authenticateToken, (req, res) => {
   }
 
   db.run(
-    'INSERT INTO events (family_id, user_id, title, description, event_date, event_time) VALUES (?, ?, ?, ?, ?, ?)',
-    [req.user.familyId, userId || req.user.userId, title, description, eventDate, eventTime],
+    'INSERT INTO events (family_id, user_id, created_by, title, description, event_date, event_time) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [req.user.familyId, userId || req.user.userId, req.user.userId, title, description, eventDate, eventTime],
     function(err) {
       if (err) {
         return res.status(500).json({ error: 'Błąd tworzenia wydarzenia' });
@@ -411,27 +417,71 @@ app.post('/api/events', authenticateToken, (req, res) => {
 app.put('/api/events/:id', authenticateToken, (req, res) => {
   const { title, description, eventDate, eventTime, userId } = req.body;
   
-  db.run(
-    'UPDATE events SET title = ?, description = ?, event_date = ?, event_time = ?, user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND family_id = ?',
-    [title, description, eventDate, eventTime, userId, req.params.id, req.user.familyId],
-    function(err) {
+  // Najpierw sprawdź kto utworzył wydarzenie
+  db.get(
+    'SELECT user_id, created_by FROM events WHERE id = ? AND family_id = ?',
+    [req.params.id, req.user.familyId],
+    (err, event) => {
       if (err) {
-        return res.status(500).json({ error: 'Błąd aktualizacji wydarzenia' });
+        return res.status(500).json({ error: 'Błąd pobierania wydarzenia' });
       }
-      res.json({ success: true });
+      
+      if (!event) {
+        return res.status(404).json({ error: 'Wydarzenie nie znalezione' });
+      }
+      
+      // Sprawdź czy użytkownik jest twórcą wydarzenia LUB adminem
+      const createdBy = event.created_by || event.user_id; // fallback dla starych rekordów
+      if (createdBy !== req.user.userId && req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Nie masz uprawnień do edycji tego wydarzenia' });
+      }
+      
+      // Jeśli ma uprawnienia - zaktualizuj
+      db.run(
+        'UPDATE events SET title = ?, description = ?, event_date = ?, event_time = ?, user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND family_id = ?',
+        [title, description, eventDate, eventTime, userId, req.params.id, req.user.familyId],
+        function(err) {
+          if (err) {
+            return res.status(500).json({ error: 'Błąd aktualizacji wydarzenia' });
+          }
+          res.json({ success: true });
+        }
+      );
     }
   );
 });
 
 app.delete('/api/events/:id', authenticateToken, (req, res) => {
-  db.run(
-    'DELETE FROM events WHERE id = ? AND family_id = ?',
+  // Najpierw sprawdź kto utworzył wydarzenie
+  db.get(
+    'SELECT user_id, created_by FROM events WHERE id = ? AND family_id = ?',
     [req.params.id, req.user.familyId],
-    function(err) {
+    (err, event) => {
       if (err) {
-        return res.status(500).json({ error: 'Błąd usuwania wydarzenia' });
+        return res.status(500).json({ error: 'Błąd pobierania wydarzenia' });
       }
-      res.json({ success: true });
+      
+      if (!event) {
+        return res.status(404).json({ error: 'Wydarzenie nie znalezione' });
+      }
+      
+      // Sprawdź czy użytkownik jest twórcą wydarzenia LUB adminem
+      const createdBy = event.created_by || event.user_id; // fallback dla starych rekordów
+      if (createdBy !== req.user.userId && req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Nie masz uprawnień do usunięcia tego wydarzenia' });
+      }
+      
+      // Jeśli ma uprawnienia - usuń
+      db.run(
+        'DELETE FROM events WHERE id = ? AND family_id = ?',
+        [req.params.id, req.user.familyId],
+        function(err) {
+          if (err) {
+            return res.status(500).json({ error: 'Błąd usuwania wydarzenia' });
+          }
+          res.json({ success: true });
+        }
+      );
     }
   );
 });

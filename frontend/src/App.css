@@ -576,4 +576,13 @@ body {
   .form-row {
     grid-template-columns: 1fr;
   }
+  .event-creator {
+  font-size: 10px;
+  margin-left: 4px;
+  opacity: 0.6;
+}
+
+.event-item:hover .event-creator {
+  opacity: 1;
+}
 }
