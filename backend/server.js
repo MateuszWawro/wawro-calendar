@@ -54,18 +54,20 @@ function initDatabase() {
 
     // Events table
     db.run(`CREATE TABLE IF NOT EXISTS events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      family_id INTEGER NOT NULL,
-      user_id INTEGER NOT NULL,
-      title TEXT NOT NULL,
-      description TEXT,
-      event_date DATE NOT NULL,
-      event_time TIME,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (family_id) REFERENCES families(id),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    )`);
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  family_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  created_by INTEGER,
+  title TEXT NOT NULL,
+  description TEXT,
+  event_date DATE NOT NULL,
+  event_time TIME,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (family_id) REFERENCES families(id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+)`);
 
     // Shopping lists table
     db.run(`CREATE TABLE IF NOT EXISTS shopping_lists (
@@ -154,7 +156,14 @@ const authenticateToken = (req, res, next) => {
   if (!token) {
     return res.status(401).json({ error: 'Brak tokenu autoryzacji' });
   }
-
+// DEBUG MIDDLEWARE - dodaj to tymczasowo
+app.use((req, res, next) => {
+  if (req.path.includes('/admin')) {
+    console.log('🔍 Admin route:', req.method, req.path);
+    console.log('🔍 User:', req.user);
+  }
+  next();
+});
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) {
       return res.status(403).json({ error: 'Nieprawidłowy lub wygasły token' });
@@ -366,9 +375,13 @@ app.get('/api/events', authenticateToken, (req, res) => {
   const { month, year } = req.query;
   
   let query = `
-    SELECT e.*, u.name as user_name, u.color as user_color 
+    SELECT e.*, 
+           u.name as user_name, 
+           u.color as user_color,
+           creator.name as created_by_name
     FROM events e 
     JOIN users u ON e.user_id = u.id 
+    LEFT JOIN users creator ON e.created_by = creator.id
     WHERE e.family_id = ?
   `;
   
@@ -397,8 +410,8 @@ app.post('/api/events', authenticateToken, (req, res) => {
   }
 
   db.run(
-    'INSERT INTO events (family_id, user_id, title, description, event_date, event_time) VALUES (?, ?, ?, ?, ?, ?)',
-    [req.user.familyId, userId || req.user.userId, title, description, eventDate, eventTime],
+    'INSERT INTO events (family_id, user_id, created_by, title, description, event_date, event_time) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [req.user.familyId, userId || req.user.userId, req.user.userId, title, description, eventDate, eventTime],
     function(err) {
       if (err) {
         return res.status(500).json({ error: 'Błąd tworzenia wydarzenia' });
@@ -411,27 +424,71 @@ app.post('/api/events', authenticateToken, (req, res) => {
 app.put('/api/events/:id', authenticateToken, (req, res) => {
   const { title, description, eventDate, eventTime, userId } = req.body;
   
-  db.run(
-    'UPDATE events SET title = ?, description = ?, event_date = ?, event_time = ?, user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND family_id = ?',
-    [title, description, eventDate, eventTime, userId, req.params.id, req.user.familyId],
-    function(err) {
+  // Najpierw sprawdź kto utworzył wydarzenie
+  db.get(
+    'SELECT user_id, created_by FROM events WHERE id = ? AND family_id = ?',
+    [req.params.id, req.user.familyId],
+    (err, event) => {
       if (err) {
-        return res.status(500).json({ error: 'Błąd aktualizacji wydarzenia' });
+        return res.status(500).json({ error: 'Błąd pobierania wydarzenia' });
       }
-      res.json({ success: true });
+      
+      if (!event) {
+        return res.status(404).json({ error: 'Wydarzenie nie znalezione' });
+      }
+      
+      // Sprawdź czy użytkownik jest twórcą wydarzenia LUB adminem
+      const createdBy = event.created_by || event.user_id; // fallback dla starych rekordów
+      if (createdBy !== req.user.userId && req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Nie masz uprawnień do edycji tego wydarzenia' });
+      }
+      
+      // Jeśli ma uprawnienia - zaktualizuj
+      db.run(
+        'UPDATE events SET title = ?, description = ?, event_date = ?, event_time = ?, user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND family_id = ?',
+        [title, description, eventDate, eventTime, userId, req.params.id, req.user.familyId],
+        function(err) {
+          if (err) {
+            return res.status(500).json({ error: 'Błąd aktualizacji wydarzenia' });
+          }
+          res.json({ success: true });
+        }
+      );
     }
   );
 });
 
 app.delete('/api/events/:id', authenticateToken, (req, res) => {
-  db.run(
-    'DELETE FROM events WHERE id = ? AND family_id = ?',
+  // Najpierw sprawdź kto utworzył wydarzenie
+  db.get(
+    'SELECT user_id, created_by FROM events WHERE id = ? AND family_id = ?',
     [req.params.id, req.user.familyId],
-    function(err) {
+    (err, event) => {
       if (err) {
-        return res.status(500).json({ error: 'Błąd usuwania wydarzenia' });
+        return res.status(500).json({ error: 'Błąd pobierania wydarzenia' });
       }
-      res.json({ success: true });
+      
+      if (!event) {
+        return res.status(404).json({ error: 'Wydarzenie nie znalezione' });
+      }
+      
+      // Sprawdź czy użytkownik jest twórcą wydarzenia LUB adminem
+      const createdBy = event.created_by || event.user_id; // fallback dla starych rekordów
+      if (createdBy !== req.user.userId && req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Nie masz uprawnień do usunięcia tego wydarzenia' });
+      }
+      
+      // Jeśli ma uprawnienia - usuń
+      db.run(
+        'DELETE FROM events WHERE id = ? AND family_id = ?',
+        [req.params.id, req.user.familyId],
+        function(err) {
+          if (err) {
+            return res.status(500).json({ error: 'Błąd usuwania wydarzenia' });
+          }
+          res.json({ success: true });
+        }
+      );
     }
   );
 });
@@ -844,7 +901,239 @@ process.on('SIGINT', () => {
     process.exit(0);
   });
 });
+// ==================== ADMIN ROUTES ====================
 
+// Middleware sprawdzający czy użytkownik jest adminem
+const requireAdmin = (req, res, next) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Tylko administrator ma dostęp do tej funkcji' });
+  }
+  next();
+};
+
+// Get all family members (admin only)
+app.get('/api/admin/users', authenticateToken, requireAdmin, (req, res) => {
+  db.all(
+    `SELECT id, name, email, color, role, created_at 
+     FROM users 
+     WHERE family_id = ? 
+     ORDER BY 
+       CASE role WHEN 'admin' THEN 1 ELSE 2 END,
+       created_at`,
+    [req.user.familyId],
+    (err, users) => {
+      if (err) {
+        return res.status(500).json({ error: 'Błąd pobierania użytkowników' });
+      }
+      res.json(users);
+    }
+  );
+});
+
+// Update user details (admin only)
+app.put('/api/admin/users/:userId', authenticateToken, requireAdmin, async (req, res) => {
+  const { name, email, color, role } = req.body;
+  const userId = req.params.userId;
+
+  // Walidacja
+  if (!name || !email) {
+    return res.status(400).json({ error: 'Imię i email są wymagane' });
+  }
+
+  // Sprawdź czy email nie jest już używany przez innego użytkownika
+  db.get(
+    'SELECT id FROM users WHERE email = ? AND id != ? AND family_id = ?',
+    [email, userId, req.user.familyId],
+    (err, existingUser) => {
+      if (existingUser) {
+        return res.status(400).json({ error: 'Ten email jest już używany przez innego użytkownika' });
+      }
+
+      // Nie można odebrać uprawnień admina ostatniemu adminowi
+      if (role !== 'admin') {
+        db.get(
+          'SELECT COUNT(*) as admin_count FROM users WHERE family_id = ? AND role = "admin"',
+          [req.user.familyId],
+          (err, result) => {
+            if (result.admin_count <= 1) {
+              db.get('SELECT role FROM users WHERE id = ?', [userId], (err, user) => {
+                if (user && user.role === 'admin') {
+                  return res.status(400).json({ 
+                    error: 'Nie można odebrać uprawnień ostatniemu administratorowi' 
+                  });
+                }
+                updateUser();
+              });
+            } else {
+              updateUser();
+            }
+          }
+        );
+      } else {
+        updateUser();
+      }
+
+      function updateUser() {
+        db.run(
+          'UPDATE users SET name = ?, email = ?, color = ?, role = ? WHERE id = ? AND family_id = ?',
+          [name, email, color, role || 'member', userId, req.user.familyId],
+          function(err) {
+            if (err) {
+              return res.status(500).json({ error: 'Błąd aktualizacji użytkownika' });
+            }
+            res.json({ success: true, message: 'Użytkownik zaktualizowany' });
+          }
+        );
+      }
+    }
+  );
+});
+
+// Change user password (admin only)
+app.put('/api/admin/users/:userId/password', authenticateToken, requireAdmin, async (req, res) => {
+  const { newPassword } = req.body;
+  const userId = req.params.userId;
+
+  if (!newPassword || newPassword.length < 6) {
+    return res.status(400).json({ error: 'Hasło musi mieć minimum 6 znaków' });
+  }
+
+  try {
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+    db.run(
+      'UPDATE users SET password = ? WHERE id = ? AND family_id = ?',
+      [hashedPassword, userId, req.user.familyId],
+      function(err) {
+        if (err) {
+          return res.status(500).json({ error: 'Błąd zmiany hasła' });
+        }
+        res.json({ success: true, message: 'Hasło zostało zmienione' });
+      }
+    );
+  } catch (error) {
+    res.status(500).json({ error: 'Błąd serwera' });
+  }
+});
+
+// Delete user (admin only)
+app.delete('/api/admin/users/:userId', authenticateToken, requireAdmin, (req, res) => {
+  const userId = parseInt(req.params.userId);
+
+  // Nie można usunąć samego siebie
+  if (userId === req.user.userId) {
+    return res.status(400).json({ error: 'Nie możesz usunąć samego siebie' });
+  }
+
+  // Sprawdź czy użytkownik nie jest ostatnim adminem
+  db.get(
+    'SELECT role FROM users WHERE id = ? AND family_id = ?',
+    [userId, req.user.familyId],
+    (err, user) => {
+      if (!user) {
+        return res.status(404).json({ error: 'Użytkownik nie znaleziony' });
+      }
+
+      if (user.role === 'admin') {
+        db.get(
+          'SELECT COUNT(*) as admin_count FROM users WHERE family_id = ? AND role = "admin"',
+          [req.user.familyId],
+          (err, result) => {
+            if (result.admin_count <= 1) {
+              return res.status(400).json({ 
+                error: 'Nie można usunąć ostatniego administratora' 
+              });
+            }
+            deleteUser();
+          }
+        );
+      } else {
+        deleteUser();
+      }
+
+      function deleteUser() {
+        db.run(
+          'DELETE FROM users WHERE id = ? AND family_id = ?',
+          [userId, req.user.familyId],
+          function(err) {
+            if (err) {
+              return res.status(500).json({ error: 'Błąd usuwania użytkownika' });
+            }
+            res.json({ success: true, message: 'Użytkownik został usunięty' });
+          }
+        );
+      }
+    }
+  );
+});
+
+// Get family statistics (admin only)
+app.get('/api/admin/stats', authenticateToken, requireAdmin, (req, res) => {
+  const stats = {};
+
+  // Liczba użytkowników
+  db.get(
+    'SELECT COUNT(*) as count FROM users WHERE family_id = ?',
+    [req.user.familyId],
+    (err, result) => {
+      stats.usersCount = result.count;
+
+      // Liczba wydarzeń
+      db.get(
+        'SELECT COUNT(*) as count FROM events WHERE family_id = ?',
+        [req.user.familyId],
+        (err, result) => {
+          stats.eventsCount = result.count;
+
+          // Liczba list zakupów
+          db.get(
+            'SELECT COUNT(*) as count FROM shopping_lists WHERE family_id = ?',
+            [req.user.familyId],
+            (err, result) => {
+              stats.shoppingListsCount = result.count;
+
+              // Liczba zadań
+              db.get(
+                'SELECT COUNT(*) as count FROM todos WHERE family_id = ?',
+                [req.user.familyId],
+                (err, result) => {
+                  stats.todosCount = result.count;
+
+                  // Liczba notatek
+                  db.get(
+                    'SELECT COUNT(*) as count FROM notes WHERE family_id = ?',
+                    [req.user.familyId],
+                    (err, result) => {
+                      stats.notesCount = result.count;
+
+                      res.json(stats);
+                    }
+                  );
+                }
+              );
+            }
+          );
+        }
+      );
+    }
+  );
+});
+
+// Regenerate invite code (admin only)
+app.post('/api/admin/regenerate-invite', authenticateToken, requireAdmin, (req, res) => {
+  const newInviteCode = generateInviteCode();
+
+  db.run(
+    'UPDATE families SET invite_code = ? WHERE id = ?',
+    [newInviteCode, req.user.familyId],
+    function(err) {
+      if (err) {
+        return res.status(500).json({ error: 'Błąd generowania kodu' });
+      }
+      res.json({ inviteCode: newInviteCode });
+    }
+  );
+});
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);

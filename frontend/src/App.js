@@ -9,7 +9,9 @@ import Todos from './components/Todos';
 import Meals from './components/Meals';
 import Notes from './components/Notes';
 import Reminders from './components/Reminders';
-import { Calendar as CalendarIcon, ShoppingCart, CheckSquare, UtensilsCrossed, StickyNote, Bell, LogOut, Users } from 'lucide-react';
+import AdminPanel from './components/AdminPanel';
+import { Calendar as CalendarIcon, ShoppingCart, CheckSquare, UtensilsCrossed, StickyNote, Bell, LogOut, Users, Moon, Sun, Settings } from 'lucide-react';
+
 
 // Konfiguracja API
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
@@ -45,11 +47,12 @@ axios.interceptors.response.use(
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [user, setUser] = useState(null);
-  const [family, setFamily] = useState(null);
-  const [activeTab, setActiveTab] = useState('calendar');
-  const [members, setMembers] = useState([]);
-  const [loading, setLoading] = useState(true);
+const [user, setUser] = useState(null);
+const [family, setFamily] = useState(null);
+const [activeTab, setActiveTab] = useState('calendar');
+const [members, setMembers] = useState([]);
+const [loading, setLoading] = useState(true);
+const [darkMode, setDarkMode] = useState(false);
 
   useEffect(() => {
     // Sprawdź czy użytkownik jest zalogowany
@@ -71,6 +74,14 @@ function App() {
       }
     }
     setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    const savedDarkMode = localStorage.getItem('darkMode') === 'true';
+    setDarkMode(savedDarkMode);
+    if (savedDarkMode) {
+      document.body.classList.add('dark-mode');
+    }
   }, []);
 
   const fetchMembers = async () => {
@@ -111,6 +122,24 @@ function App() {
     setActiveTab('calendar');
   };
 
+  const handleInviteCodeUpdate = (newCode) => {
+  const updatedFamily = { ...family, inviteCode: newCode };
+  setFamily(updatedFamily);
+  localStorage.setItem('family', JSON.stringify(updatedFamily));
+};
+
+  const toggleDarkMode = () => {
+    const newDarkMode = !darkMode;
+    setDarkMode(newDarkMode);
+    localStorage.setItem('darkMode', newDarkMode.toString());
+    
+    if (newDarkMode) {
+      document.body.classList.add('dark-mode');
+    } else {
+      document.body.classList.remove('dark-mode');
+    }
+  };
+
   if (loading) {
     return (
       <div className="app">
@@ -133,6 +162,7 @@ function App() {
     { id: 'meals', name: 'Posiłki', icon: UtensilsCrossed },
     { id: 'notes', name: 'Notatki', icon: StickyNote },
     { id: 'reminders', name: 'Przypomnienia', icon: Bell }
+    , ...(user?.role === 'admin' ? [{ id: 'admin', name: 'Admin', icon: Settings }] : [])
   ];
 
   return (
@@ -148,16 +178,26 @@ function App() {
             </div>
           </div>
           <div className="header-right">
-            <div className="user-info">
-              <span className="user-name">{user?.name}</span>
-              {family?.inviteCode && (
-                <span className="invite-code">Kod: {family.inviteCode}</span>
-              )}
-            </div>
-            <button onClick={handleLogout} className="logout-btn" title="Wyloguj się">
-              <LogOut size={20} />
-            </button>
-          </div>
+  <div className="user-info">
+    <span className="user-name">{user?.name}</span>
+    {family?.inviteCode && (
+      <span className="invite-code">Kod: {family.inviteCode}</span>
+    )}
+  </div>
+  
+  {/* Dark Mode Toggle */}
+  <button 
+    onClick={toggleDarkMode} 
+    className="theme-toggle-btn"
+    title={darkMode ? 'Tryb jasny' : 'Tryb ciemny'}
+  >
+    {darkMode ? <Sun size={20} /> : <Moon size={20} />}
+  </button>
+  
+  <button onClick={handleLogout} className="logout-btn" title="Wyloguj się">
+    <LogOut size={20} />
+  </button>
+</div>
         </div>
       </header>
 
@@ -186,6 +226,13 @@ function App() {
         {activeTab === 'meals' && <Meals apiUrl={API_URL} />}
         {activeTab === 'notes' && <Notes apiUrl={API_URL} user={user} />}
         {activeTab === 'reminders' && <Reminders apiUrl={API_URL} members={members} />}
+        {activeTab === 'admin' && user?.role === 'admin' && (
+    <AdminPanel 
+      apiUrl={API_URL} 
+      user={user}
+      onInviteCodeUpdate={handleInviteCodeUpdate}
+    />
+  )}
       </main>
     </div>
   );
