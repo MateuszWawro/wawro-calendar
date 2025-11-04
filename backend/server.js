@@ -894,7 +894,239 @@ process.on('SIGINT', () => {
     process.exit(0);
   });
 });
+// ==================== ADMIN ROUTES ====================
 
+// Middleware sprawdzający czy użytkownik jest adminem
+const requireAdmin = (req, res, next) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Tylko administrator ma dostęp do tej funkcji' });
+  }
+  next();
+};
+
+// Get all family members (admin only)
+app.get('/api/admin/users', authenticateToken, requireAdmin, (req, res) => {
+  db.all(
+    `SELECT id, name, email, color, role, created_at 
+     FROM users 
+     WHERE family_id = ? 
+     ORDER BY 
+       CASE role WHEN 'admin' THEN 1 ELSE 2 END,
+       created_at`,
+    [req.user.familyId],
+    (err, users) => {
+      if (err) {
+        return res.status(500).json({ error: 'Błąd pobierania użytkowników' });
+      }
+      res.json(users);
+    }
+  );
+});
+
+// Update user details (admin only)
+app.put('/api/admin/users/:userId', authenticateToken, requireAdmin, async (req, res) => {
+  const { name, email, color, role } = req.body;
+  const userId = req.params.userId;
+
+  // Walidacja
+  if (!name || !email) {
+    return res.status(400).json({ error: 'Imię i email są wymagane' });
+  }
+
+  // Sprawdź czy email nie jest już używany przez innego użytkownika
+  db.get(
+    'SELECT id FROM users WHERE email = ? AND id != ? AND family_id = ?',
+    [email, userId, req.user.familyId],
+    (err, existingUser) => {
+      if (existingUser) {
+        return res.status(400).json({ error: 'Ten email jest już używany przez innego użytkownika' });
+      }
+
+      // Nie można odebrać uprawnień admina ostatniemu adminowi
+      if (role !== 'admin') {
+        db.get(
+          'SELECT COUNT(*) as admin_count FROM users WHERE family_id = ? AND role = "admin"',
+          [req.user.familyId],
+          (err, result) => {
+            if (result.admin_count <= 1) {
+              db.get('SELECT role FROM users WHERE id = ?', [userId], (err, user) => {
+                if (user && user.role === 'admin') {
+                  return res.status(400).json({ 
+                    error: 'Nie można odebrać uprawnień ostatniemu administratorowi' 
+                  });
+                }
+                updateUser();
+              });
+            } else {
+              updateUser();
+            }
+          }
+        );
+      } else {
+        updateUser();
+      }
+
+      function updateUser() {
+        db.run(
+          'UPDATE users SET name = ?, email = ?, color = ?, role = ? WHERE id = ? AND family_id = ?',
+          [name, email, color, role || 'member', userId, req.user.familyId],
+          function(err) {
+            if (err) {
+              return res.status(500).json({ error: 'Błąd aktualizacji użytkownika' });
+            }
+            res.json({ success: true, message: 'Użytkownik zaktualizowany' });
+          }
+        );
+      }
+    }
+  );
+});
+
+// Change user password (admin only)
+app.put('/api/admin/users/:userId/password', authenticateToken, requireAdmin, async (req, res) => {
+  const { newPassword } = req.body;
+  const userId = req.params.userId;
+
+  if (!newPassword || newPassword.length < 6) {
+    return res.status(400).json({ error: 'Hasło musi mieć minimum 6 znaków' });
+  }
+
+  try {
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+    db.run(
+      'UPDATE users SET password = ? WHERE id = ? AND family_id = ?',
+      [hashedPassword, userId, req.user.familyId],
+      function(err) {
+        if (err) {
+          return res.status(500).json({ error: 'Błąd zmiany hasła' });
+        }
+        res.json({ success: true, message: 'Hasło zostało zmienione' });
+      }
+    );
+  } catch (error) {
+    res.status(500).json({ error: 'Błąd serwera' });
+  }
+});
+
+// Delete user (admin only)
+app.delete('/api/admin/users/:userId', authenticateToken, requireAdmin, (req, res) => {
+  const userId = parseInt(req.params.userId);
+
+  // Nie można usunąć samego siebie
+  if (userId === req.user.userId) {
+    return res.status(400).json({ error: 'Nie możesz usunąć samego siebie' });
+  }
+
+  // Sprawdź czy użytkownik nie jest ostatnim adminem
+  db.get(
+    'SELECT role FROM users WHERE id = ? AND family_id = ?',
+    [userId, req.user.familyId],
+    (err, user) => {
+      if (!user) {
+        return res.status(404).json({ error: 'Użytkownik nie znaleziony' });
+      }
+
+      if (user.role === 'admin') {
+        db.get(
+          'SELECT COUNT(*) as admin_count FROM users WHERE family_id = ? AND role = "admin"',
+          [req.user.familyId],
+          (err, result) => {
+            if (result.admin_count <= 1) {
+              return res.status(400).json({ 
+                error: 'Nie można usunąć ostatniego administratora' 
+              });
+            }
+            deleteUser();
+          }
+        );
+      } else {
+        deleteUser();
+      }
+
+      function deleteUser() {
+        db.run(
+          'DELETE FROM users WHERE id = ? AND family_id = ?',
+          [userId, req.user.familyId],
+          function(err) {
+            if (err) {
+              return res.status(500).json({ error: 'Błąd usuwania użytkownika' });
+            }
+            res.json({ success: true, message: 'Użytkownik został usunięty' });
+          }
+        );
+      }
+    }
+  );
+});
+
+// Get family statistics (admin only)
+app.get('/api/admin/stats', authenticateToken, requireAdmin, (req, res) => {
+  const stats = {};
+
+  // Liczba użytkowników
+  db.get(
+    'SELECT COUNT(*) as count FROM users WHERE family_id = ?',
+    [req.user.familyId],
+    (err, result) => {
+      stats.usersCount = result.count;
+
+      // Liczba wydarzeń
+      db.get(
+        'SELECT COUNT(*) as count FROM events WHERE family_id = ?',
+        [req.user.familyId],
+        (err, result) => {
+          stats.eventsCount = result.count;
+
+          // Liczba list zakupów
+          db.get(
+            'SELECT COUNT(*) as count FROM shopping_lists WHERE family_id = ?',
+            [req.user.familyId],
+            (err, result) => {
+              stats.shoppingListsCount = result.count;
+
+              // Liczba zadań
+              db.get(
+                'SELECT COUNT(*) as count FROM todos WHERE family_id = ?',
+                [req.user.familyId],
+                (err, result) => {
+                  stats.todosCount = result.count;
+
+                  // Liczba notatek
+                  db.get(
+                    'SELECT COUNT(*) as count FROM notes WHERE family_id = ?',
+                    [req.user.familyId],
+                    (err, result) => {
+                      stats.notesCount = result.count;
+
+                      res.json(stats);
+                    }
+                  );
+                }
+              );
+            }
+          );
+        }
+      );
+    }
+  );
+});
+
+// Regenerate invite code (admin only)
+app.post('/api/admin/regenerate-invite', authenticateToken, requireAdmin, (req, res) => {
+  const newInviteCode = generateInviteCode();
+
+  db.run(
+    'UPDATE families SET invite_code = ? WHERE id = ?',
+    [newInviteCode, req.user.familyId],
+    function(err) {
+      if (err) {
+        return res.status(500).json({ error: 'Błąd generowania kodu' });
+      }
+      res.json({ inviteCode: newInviteCode });
+    }
+  );
+});
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);

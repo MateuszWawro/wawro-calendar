@@ -9,7 +9,8 @@ import Todos from './components/Todos';
 import Meals from './components/Meals';
 import Notes from './components/Notes';
 import Reminders from './components/Reminders';
-import { Calendar as CalendarIcon, ShoppingCart, CheckSquare, UtensilsCrossed, StickyNote, Bell, LogOut, Users, Moon, Sun } from 'lucide-react';
+import AdminPanel from './components/AdminPanel';
+import { Calendar as CalendarIcon, ShoppingCart, CheckSquare, UtensilsCrossed, StickyNote, Bell, LogOut, Users, Moon, Sun, Settings } from 'lucide-react';
 
 
 // Konfiguracja API
@@ -46,12 +47,12 @@ axios.interceptors.response.use(
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [user, setUser] = useState(null);
-  const [family, setFamily] = useState(null);
-  const [activeTab, setActiveTab] = useState('calendar');
-  const [members, setMembers] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [darkMode, setDarkMode] = useState(false);
+const [user, setUser] = useState(null);
+const [family, setFamily] = useState(null);
+const [activeTab, setActiveTab] = useState('calendar');
+const [members, setMembers] = useState([]);
+const [loading, setLoading] = useState(true);
+const [darkMode, setDarkMode] = useState(false);
 
   useEffect(() => {
     // Sprawdź czy użytkownik jest zalogowany
@@ -120,6 +121,13 @@ function App() {
     setMembers([]);
     setActiveTab('calendar');
   };
+
+  const handleInviteCodeUpdate = (newCode) => {
+  const updatedFamily = { ...family, inviteCode: newCode };
+  setFamily(updatedFamily);
+  localStorage.setItem('family', JSON.stringify(updatedFamily));
+};
+
   const toggleDarkMode = () => {
     const newDarkMode = !darkMode;
     setDarkMode(newDarkMode);
@@ -154,6 +162,7 @@ function App() {
     { id: 'meals', name: 'Posiłki', icon: UtensilsCrossed },
     { id: 'notes', name: 'Notatki', icon: StickyNote },
     { id: 'reminders', name: 'Przypomnienia', icon: Bell }
+    , ...(user?.role === 'admin' ? [{ id: 'admin', name: 'Admin', icon: Settings }] : [])
   ];
 
   return (
@@ -217,6 +226,13 @@ function App() {
         {activeTab === 'meals' && <Meals apiUrl={API_URL} />}
         {activeTab === 'notes' && <Notes apiUrl={API_URL} user={user} />}
         {activeTab === 'reminders' && <Reminders apiUrl={API_URL} members={members} />}
+        {activeTab === 'admin' && user?.role === 'admin' && (
+    <AdminPanel 
+      apiUrl={API_URL} 
+      user={user}
+      onInviteCodeUpdate={handleInviteCodeUpdate}
+    />
+  )}
       </main>
     </div>
   );
