@@ -9,7 +9,8 @@ import Todos from './components/Todos';
 import Meals from './components/Meals';
 import Notes from './components/Notes';
 import Reminders from './components/Reminders';
-import { Calendar as CalendarIcon, ShoppingCart, CheckSquare, UtensilsCrossed, StickyNote, Bell, LogOut, Users } from 'lucide-react';
+import { Calendar as CalendarIcon, ShoppingCart, CheckSquare, UtensilsCrossed, StickyNote, Bell, LogOut, Users, Moon, Sun } from 'lucide-react';
+
 
 // Konfiguracja API
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
@@ -50,6 +51,7 @@ function App() {
   const [activeTab, setActiveTab] = useState('calendar');
   const [members, setMembers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [darkMode, setDarkMode] = useState(false);
 
   useEffect(() => {
     // Sprawdź czy użytkownik jest zalogowany
@@ -71,6 +73,14 @@ function App() {
       }
     }
     setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    const savedDarkMode = localStorage.getItem('darkMode') === 'true';
+    setDarkMode(savedDarkMode);
+    if (savedDarkMode) {
+      document.body.classList.add('dark-mode');
+    }
   }, []);
 
   const fetchMembers = async () => {
@@ -110,6 +120,17 @@ function App() {
     setMembers([]);
     setActiveTab('calendar');
   };
+  const toggleDarkMode = () => {
+    const newDarkMode = !darkMode;
+    setDarkMode(newDarkMode);
+    localStorage.setItem('darkMode', newDarkMode.toString());
+    
+    if (newDarkMode) {
+      document.body.classList.add('dark-mode');
+    } else {
+      document.body.classList.remove('dark-mode');
+    }
+  };
 
   if (loading) {
     return (
@@ -148,16 +169,26 @@ function App() {
             </div>
           </div>
           <div className="header-right">
-            <div className="user-info">
-              <span className="user-name">{user?.name}</span>
-              {family?.inviteCode && (
-                <span className="invite-code">Kod: {family.inviteCode}</span>
-              )}
-            </div>
-            <button onClick={handleLogout} className="logout-btn" title="Wyloguj się">
-              <LogOut size={20} />
-            </button>
-          </div>
+  <div className="user-info">
+    <span className="user-name">{user?.name}</span>
+    {family?.inviteCode && (
+      <span className="invite-code">Kod: {family.inviteCode}</span>
+    )}
+  </div>
+  
+  {/* Dark Mode Toggle */}
+  <button 
+    onClick={toggleDarkMode} 
+    className="theme-toggle-btn"
+    title={darkMode ? 'Tryb jasny' : 'Tryb ciemny'}
+  >
+    {darkMode ? <Sun size={20} /> : <Moon size={20} />}
+  </button>
+  
+  <button onClick={handleLogout} className="logout-btn" title="Wyloguj się">
+    <LogOut size={20} />
+  </button>
+</div>
         </div>
       </header>
 
