@@ -6,6 +6,7 @@ import {
   Filter, Download, Upload, Link as LinkIcon,
   Eye, EyeOff, Search, Calendar as CalIcon
 } from 'lucide-react';
+import './CalendarEnhanced.css'; // Import zewnętrznego pliku CSS
 
 function CalendarEnhanced({ apiUrl, members }) {
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -34,12 +35,19 @@ function CalendarEnhanced({ apiUrl, members }) {
     fetchEvents();
   }, [currentDate]);
 
+  // Funkcja pomocnicza do pobierania tokena
+  const getAuthHeader = () => {
+    const token = localStorage.getItem('token');
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  };
+
   const fetchEvents = async () => {
     try {
       const month = (currentDate.getMonth() + 1).toString().padStart(2, '0');
       const year = currentDate.getFullYear();
       const response = await axios.get(`${apiUrl}/events`, {
-        params: { month, year }
+        params: { month, year },
+        headers: getAuthHeader()
       });
       setEvents(response.data);
     } catch (error) {
@@ -142,9 +150,13 @@ function CalendarEnhanced({ apiUrl, members }) {
     
     try {
       if (editingEvent) {
-        await axios.put(`${apiUrl}/events/${editingEvent.id}`, formData);
+        await axios.put(`${apiUrl}/events/${editingEvent.id}`, formData, {
+          headers: getAuthHeader()
+        });
       } else {
-        await axios.post(`${apiUrl}/events`, formData);
+        await axios.post(`${apiUrl}/events`, formData, {
+          headers: getAuthHeader()
+        });
       }
       
       setShowModal(false);
@@ -165,7 +177,9 @@ function CalendarEnhanced({ apiUrl, members }) {
   const handleDeleteEvent = async (eventId) => {
     if (window.confirm('Czy na pewno chcesz usunąć to wydarzenie?')) {
       try {
-        await axios.delete(`${apiUrl}/events/${eventId}`);
+        await axios.delete(`${apiUrl}/events/${eventId}`, {
+          headers: getAuthHeader()
+        });
         fetchEvents();
       } catch (error) {
         console.error('Error deleting event:', error);
@@ -439,138 +453,9 @@ function CalendarEnhanced({ apiUrl, members }) {
         <IntegrationsModal
           apiUrl={apiUrl}
           onClose={() => setShowIntegrationsModal(false)}
+          getAuthHeader={getAuthHeader}
         />
       )}
-
-      <style jsx>{`
-        .calendar-toolbar {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding: 1rem;
-          background: var(--bg-secondary);
-          border-radius: 12px 12px 0 0;
-          border-bottom: 1px solid var(--border-color);
-        }
-
-        .toolbar-left, .toolbar-right {
-          display: flex;
-          gap: 0.75rem;
-          align-items: center;
-        }
-
-        .btn-filter {
-          display: flex;
-          align-items: center;
-          gap: 0.5rem;
-          padding: 0.5rem 1rem;
-          background: var(--bg-tertiary);
-          border: 2px solid var(--border-color);
-          border-radius: 8px;
-          color: var(--text-secondary);
-          font-weight: 500;
-          cursor: pointer;
-          transition: all 0.2s;
-        }
-
-        .btn-filter:hover {
-          background: var(--bg-hover);
-          border-color: var(--accent-primary);
-        }
-
-        .btn-filter.active {
-          background: var(--accent-light);
-          border-color: var(--accent-primary);
-          color: var(--accent-primary);
-        }
-
-        .filter-count {
-          background: var(--accent-primary);
-          color: white;
-          padding: 0.125rem 0.5rem;
-          border-radius: 12px;
-          font-size: 0.75rem;
-          font-weight: 600;
-        }
-
-        .search-wrapper {
-          position: relative;
-          display: flex;
-          align-items: center;
-        }
-
-        .search-icon {
-          position: absolute;
-          left: 0.75rem;
-          color: var(--text-quaternary);
-        }
-
-        .search-input {
-          padding: 0.5rem 0.75rem 0.5rem 2.5rem;
-          border: 2px solid var(--border-color);
-          border-radius: 8px;
-          font-size: 0.875rem;
-          min-width: 250px;
-          background: var(--bg-secondary);
-          color: var(--text-primary);
-        }
-
-        .search-input:focus {
-          outline: none;
-          border-color: var(--accent-primary);
-        }
-
-        .btn-toolbar {
-          display: flex;
-          align-items: center;
-          padding: 0.5rem;
-          background: var(--bg-tertiary);
-          border: none;
-          border-radius: 8px;
-          color: var(--text-secondary);
-          cursor: pointer;
-          transition: all 0.2s;
-        }
-
-        .btn-toolbar:hover {
-          background: var(--accent-primary);
-          color: white;
-        }
-
-        .calendar-day.compact {
-          min-height: 70px;
-        }
-
-        .calendar-day.compact .event-item {
-          font-size: 0.6875rem;
-          padding: 0.125rem 0.375rem;
-        }
-
-        .more-events {
-          font-size: 0.6875rem;
-          color: var(--text-tertiary);
-          padding: 0.25rem;
-          text-align: center;
-          font-weight: 600;
-        }
-
-        @media (max-width: 768px) {
-          .calendar-toolbar {
-            flex-direction: column;
-            gap: 0.75rem;
-          }
-
-          .toolbar-left, .toolbar-right {
-            width: 100%;
-            justify-content: space-between;
-          }
-
-          .search-input {
-            min-width: auto;
-            flex: 1;
-          }
-        }
-      `}</style>
     </div>
   );
 }
@@ -626,95 +511,13 @@ function FilterModal({ filters, setFilters, members, onClose, toggleMemberFilter
             Zastosuj filtry
           </button>
         </div>
-
-        <style jsx>{`
-          .filter-content {
-            padding: 1rem 0;
-          }
-
-          .filter-section {
-            margin-bottom: 1.5rem;
-          }
-
-          .filter-section-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1rem;
-          }
-
-          .filter-section h4 {
-            margin: 0;
-            color: var(--text-primary);
-            font-size: 1rem;
-          }
-
-          .filter-actions {
-            display: flex;
-            gap: 0.5rem;
-            align-items: center;
-          }
-
-          .btn-link {
-            background: none;
-            border: none;
-            color: var(--accent-primary);
-            font-size: 0.875rem;
-            cursor: pointer;
-            padding: 0;
-          }
-
-          .btn-link:hover {
-            text-decoration: underline;
-          }
-
-          .members-filter {
-            display: flex;
-            flex-direction: column;
-            gap: 0.75rem;
-          }
-
-          .member-checkbox {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            padding: 0.5rem;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: background 0.2s;
-          }
-
-          .member-checkbox:hover {
-            background: var(--bg-tertiary);
-          }
-
-          .member-checkbox input[type="checkbox"] {
-            width: 18px;
-            height: 18px;
-            cursor: pointer;
-          }
-
-          .member-color {
-            width: 24px;
-            height: 24px;
-            border-radius: 50%;
-            flex-shrink: 0;
-          }
-
-          .member-checkbox span {
-            color: var(--text-primary);
-            font-size: 0.9375rem;
-          }
-        `}</style>
       </div>
     </div>
   );
 }
 
-// Aktualizacja komponentu IntegrationsModal
-// Dodaj te funkcje do istniejącego komponentu w CalendarEnhanced.js
-
-function IntegrationsModal({ apiUrl, onClose }) {
+// Komponent Modal Integracji
+function IntegrationsModal({ apiUrl, onClose, getAuthHeader }) {
   const [feedUrl, setFeedUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [googleConnected, setGoogleConnected] = useState(false);
@@ -727,7 +530,9 @@ function IntegrationsModal({ apiUrl, onClose }) {
 
   const checkConnectionStatus = async () => {
     try {
-      const response = await axios.get(`${apiUrl}/calendar/integrations/status`);
+      const response = await axios.get(`${apiUrl}/calendar/integrations/status`, {
+        headers: getAuthHeader()
+      });
       setGoogleConnected(response.data.google.connected);
     } catch (error) {
       console.error('Error checking status:', error);
@@ -736,7 +541,9 @@ function IntegrationsModal({ apiUrl, onClose }) {
 
   const handleGoogleAuth = async () => {
     try {
-      const response = await axios.get(`${apiUrl}/calendar/google/auth`);
+      const response = await axios.get(`${apiUrl}/calendar/google/auth`, {
+        headers: getAuthHeader()
+      });
       // Otwórz w nowym oknie
       const authWindow = window.open(response.data.authUrl, '_blank', 'width=600,height=700');
       
@@ -764,12 +571,14 @@ function IntegrationsModal({ apiUrl, onClose }) {
     setImportStatus('Importowanie...');
     
     try {
-      const response = await axios.post(`${apiUrl}/calendar/google/import`);
+      const response = await axios.post(`${apiUrl}/calendar/google/import`, {}, {
+        headers: getAuthHeader()
+      });
       setImportStatus(`✅ Zaimportowano ${response.data.imported} wydarzeń (pominięto ${response.data.skipped} duplikatów)`);
       
       // Odśwież kalendarz po 2 sekundach
       setTimeout(() => {
-        window.location.reload(); // Prosta metoda - odświeża całą stronę
+        window.location.reload();
       }, 2000);
     } catch (error) {
       console.error('Error importing:', error);
@@ -785,7 +594,9 @@ function IntegrationsModal({ apiUrl, onClose }) {
     }
 
     try {
-      await axios.delete(`${apiUrl}/calendar/google/disconnect`);
+      await axios.delete(`${apiUrl}/calendar/google/disconnect`, {
+        headers: getAuthHeader()
+      });
       setGoogleConnected(false);
       alert('Rozłączono z Google Calendar');
     } catch (error) {
@@ -797,7 +608,9 @@ function IntegrationsModal({ apiUrl, onClose }) {
   const handleGenerateFeed = async () => {
     setLoading(true);
     try {
-      const response = await axios.post(`${apiUrl}/calendar/generate-feed-token`);
+      const response = await axios.post(`${apiUrl}/calendar/generate-feed-token`, {}, {
+        headers: getAuthHeader()
+      });
       setFeedUrl(response.data.feedUrl);
     } catch (error) {
       console.error('Error:', error);
@@ -923,149 +736,6 @@ function IntegrationsModal({ apiUrl, onClose }) {
             )}
           </div>
         </div>
-
-        <style jsx>{`
-          .modal-large {
-            max-width: 600px;
-          }
-
-          .integrations-content {
-            display: flex;
-            flex-direction: column;
-            gap: 1.5rem;
-            padding: 1rem 0;
-          }
-
-          .integration-card {
-            border: 2px solid var(--border-color);
-            border-radius: 12px;
-            padding: 1.5rem;
-            display: flex;
-            flex-direction: column;
-            gap: 1rem;
-          }
-
-          .integration-header {
-            display: flex;
-            align-items: flex-start;
-            gap: 1rem;
-          }
-
-          .integration-header h4 {
-            margin: 0 0 0.25rem 0;
-            color: var(--text-primary);
-            font-size: 1.125rem;
-          }
-
-          .integration-header p {
-            margin: 0;
-            color: var(--text-tertiary);
-            font-size: 0.875rem;
-          }
-
-          .status-badge {
-            display: inline-block;
-            padding: 0.25rem 0.75rem;
-            border-radius: 12px;
-            font-size: 0.75rem;
-            font-weight: 600;
-            margin-top: 0.5rem;
-          }
-
-          .status-badge.connected {
-            background: #d1fae5;
-            color: #065f46;
-          }
-
-          .integration-actions {
-            display: flex;
-            gap: 0.75rem;
-            flex-wrap: wrap;
-          }
-
-          .import-status {
-            padding: 0.75rem;
-            border-radius: 8px;
-            font-size: 0.875rem;
-            font-weight: 500;
-          }
-
-          .import-status.success {
-            background: #d1fae5;
-            color: #065f46;
-          }
-
-          .import-status.error {
-            background: #fee;
-            color: #991b1b;
-          }
-
-          .help-text {
-            padding: 0.75rem;
-            background: var(--bg-tertiary);
-            border-radius: 8px;
-            font-size: 0.875rem;
-            color: var(--text-secondary);
-          }
-
-          .feed-url-box {
-            display: flex;
-            gap: 0.5rem;
-          }
-
-          .feed-url-input {
-            flex: 1;
-            padding: 0.75rem;
-            border: 2px solid var(--border-color);
-            border-radius: 8px;
-            font-size: 0.875rem;
-            font-family: 'Courier New', monospace;
-            background: var(--bg-tertiary);
-            color: var(--text-primary);
-          }
-
-          .btn-copy {
-            padding: 0.75rem 1.5rem;
-            background: var(--accent-primary);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: background 0.2s;
-          }
-
-          .btn-copy:hover {
-            background: var(--accent-hover);
-          }
-
-          .feed-instructions {
-            background: var(--bg-tertiary);
-            padding: 1rem;
-            border-radius: 8px;
-          }
-
-          .feed-instructions h5 {
-            margin: 0 0 0.75rem 0;
-            color: var(--text-primary);
-            font-size: 0.9375rem;
-          }
-
-          .feed-instructions ul {
-            margin: 0;
-            padding-left: 1.5rem;
-          }
-
-          .feed-instructions li {
-            color: var(--text-secondary);
-            font-size: 0.875rem;
-            margin-bottom: 0.5rem;
-          }
-
-          .feed-instructions strong {
-            color: var(--text-primary);
-          }
-        `}</style>
       </div>
     </div>
   );
