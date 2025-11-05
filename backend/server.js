@@ -1,14 +1,32 @@
 // backend/server.js
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const { google } = require('googleapis');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'zmien-to-na-swoj-super-tajny-klucz-production';
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3001/api/calendar/google/callback';
+
+const oauth2Client = new google.auth.OAuth2(
+  GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET,
+  GOOGLE_REDIRECT_URI
+);
+
+// DEBUG - usuń po naprawie
+console.log('🔧 Google Config Check:');
+console.log('Client ID:', GOOGLE_CLIENT_ID ? '✅ SET' : '❌ MISSING');
+console.log('Secret:', GOOGLE_CLIENT_SECRET ? '✅ SET' : '❌ MISSING');
+console.log('Redirect:', GOOGLE_REDIRECT_URI);
 
 // Middleware
 app.use(cors({
@@ -30,6 +48,37 @@ const db = new sqlite3.Database(dbPath, (err) => {
 
 // Initialize database tables
 function initDatabase() {
+  db.run(`CREATE TABLE IF NOT EXISTS calendar_integrations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  provider TEXT NOT NULL,
+  access_token TEXT NOT NULL,
+  refresh_token TEXT,
+  expires_at INTEGER,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  UNIQUE(user_id, provider)
+)`);
+
+// Dodaj kolumny do istniejących tabel (jeśli jeszcze nie istnieją)
+db.run(`ALTER TABLE families ADD COLUMN calendar_token TEXT`, (err) => {
+  if (err && !err.message.includes('duplicate column')) {
+    console.error('Error adding calendar_token:', err);
+  }
+});
+
+db.run(`ALTER TABLE events ADD COLUMN google_event_id TEXT`, (err) => {
+  if (err && !err.message.includes('duplicate column')) {
+    console.error('Error adding google_event_id:', err);
+  }
+});
+
+db.run(`ALTER TABLE events ADD COLUMN ical_uid TEXT`, (err) => {
+  if (err && !err.message.includes('duplicate column')) {
+    console.error('Error adding ical_uid:', err);
+  }
+});
   db.serialize(() => {
     // Families table
     db.run(`CREATE TABLE IF NOT EXISTS families (
@@ -126,7 +175,20 @@ function initDatabase() {
       FOREIGN KEY (family_id) REFERENCES families(id),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )`);
-
+db.run(`ALTER TABLE events ADD COLUMN created_by INTEGER REFERENCES users(id) ON DELETE SET NULL`, (err) => {
+  if (err && !err.message.includes('duplicate column')) {
+    console.error('Error adding created_by column:', err);
+  } else {
+    console.log('✅ created_by column ready');
+    
+    // Update existing events
+    db.run(`UPDATE events SET created_by = user_id WHERE created_by IS NULL`, (err) => {
+      if (!err) {
+        console.log('✅ Migrated existing events');
+      }
+    });
+  }
+});
     // Reminders table
     db.run(`CREATE TABLE IF NOT EXISTS reminders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1133,6 +1195,489 @@ app.post('/api/admin/regenerate-invite', authenticateToken, requireAdmin, (req, 
       res.json({ inviteCode: newInviteCode });
     }
   );
+});
+// ==================== GOOGLE CALENDAR ROUTES ====================
+
+// Rozpocznij autoryzację Google
+app.get('/api/calendar/google/auth', authenticateToken, (req, res) => {
+  const authUrl = oauth2Client.generateAuthUrl({
+    access_type: 'offline',
+    scope: ['https://www.googleapis.com/auth/calendar.events'],
+    state: req.user.userId.toString(),
+    prompt: 'consent' // Wymusza pokazanie ekranu zgody
+  });
+  res.json({ authUrl });
+});
+
+// Callback po autoryzacji Google
+app.get('/api/calendar/google/callback', async (req, res) => {
+  const { code, state } = req.query;
+  const userId = parseInt(state);
+
+  if (!code || !userId) {
+    return res.redirect('http://localhost:3000/calendar?error=invalid_request');
+  }
+
+  try {
+    const { tokens } = await oauth2Client.getToken(code);
+    
+    db.run(
+      `INSERT OR REPLACE INTO calendar_integrations 
+       (user_id, provider, access_token, refresh_token, expires_at, updated_at) 
+       VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+      [userId, 'google', tokens.access_token, tokens.refresh_token, tokens.expiry_date],
+      (err) => {
+        if (err) {
+          console.error('Error saving Google tokens:', err);
+          return res.redirect('http://localhost:3000/calendar?error=auth_failed');
+        }
+        res.redirect('http://localhost:3000/calendar?success=google_connected');
+      }
+    );
+  } catch (error) {
+    console.error('Error getting Google tokens:', error);
+    res.redirect('http://localhost:3000/calendar?error=auth_failed');
+  }
+});
+
+// Import wydarzeń z Google Calendar
+app.post('/api/calendar/google/import', authenticateToken, async (req, res) => {
+  try {
+    // Pobierz tokeny
+    const integration = await new Promise((resolve, reject) => {
+      db.get(
+        'SELECT * FROM calendar_integrations WHERE user_id = ? AND provider = ?',
+        [req.user.userId, 'google'],
+        (err, row) => err ? reject(err) : resolve(row)
+      );
+    });
+
+    if (!integration) {
+      return res.status(400).json({ error: 'Brak połączenia z Google Calendar. Najpierw połącz konto.' });
+    }
+
+    // Ustaw tokeny OAuth
+    oauth2Client.setCredentials({
+      access_token: integration.access_token,
+      refresh_token: integration.refresh_token,
+      expiry_date: integration.expires_at
+    });
+
+    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+
+    // Pobierz wydarzenia z ostatnich 30 dni i kolejnych 90 dni
+    const timeMin = new Date();
+    timeMin.setDate(timeMin.getDate() - 30);
+    const timeMax = new Date();
+    timeMax.setDate(timeMax.getDate() + 90);
+
+    const response = await calendar.events.list({
+      calendarId: 'primary',
+      timeMin: timeMin.toISOString(),
+      timeMax: timeMax.toISOString(),
+      singleEvents: true,
+      orderBy: 'startTime',
+      maxResults: 100
+    });
+
+    const events = response.data.items || [];
+    let importedCount = 0;
+    let skippedCount = 0;
+
+    for (const gEvent of events) {
+      // Sprawdź czy już nie istnieje
+      const exists = await new Promise((resolve, reject) => {
+        db.get(
+          'SELECT id FROM events WHERE google_event_id = ?',
+          [gEvent.id],
+          (err, row) => err ? reject(err) : resolve(row)
+        );
+      });
+
+      if (exists) {
+        skippedCount++;
+        continue;
+      }
+
+      // Parsuj datę i czas
+      const startDateTime = gEvent.start.dateTime || gEvent.start.date;
+      let eventDate, eventTime;
+
+      if (startDateTime.includes('T')) {
+        [eventDate, eventTime] = startDateTime.split('T');
+        eventTime = eventTime.substring(0, 5); // HH:MM
+      } else {
+        eventDate = startDateTime;
+        eventTime = null;
+      }
+
+      // Dodaj wydarzenie
+      await new Promise((resolve, reject) => {
+        db.run(
+          `INSERT INTO events 
+           (family_id, user_id, created_by, title, description, event_date, event_time, google_event_id) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            req.user.familyId,
+            req.user.userId,
+            req.user.userId,
+            gEvent.summary || 'Bez tytułu',
+            gEvent.description || '',
+            eventDate,
+            eventTime,
+            gEvent.id
+          ],
+          (err) => err ? reject(err) : resolve()
+        );
+      });
+      importedCount++;
+    }
+
+    res.json({ 
+      success: true, 
+      imported: importedCount, 
+      skipped: skippedCount,
+      total: events.length 
+    });
+  } catch (error) {
+    console.error('Error importing from Google Calendar:', error);
+    
+    if (error.code === 401) {
+      return res.status(401).json({ 
+        error: 'Wygasła autoryzacja. Połącz ponownie z Google Calendar.' 
+      });
+    }
+    
+    res.status(500).json({ error: 'Błąd importu z Google Calendar' });
+  }
+});
+
+// Export pojedynczego wydarzenia do Google Calendar
+app.post('/api/calendar/google/export/:eventId', authenticateToken, async (req, res) => {
+  const { eventId } = req.params;
+
+  try {
+    // Pobierz event
+    const event = await new Promise((resolve, reject) => {
+      db.get(
+        'SELECT * FROM events WHERE id = ? AND family_id = ?',
+        [eventId, req.user.familyId],
+        (err, row) => err ? reject(err) : resolve(row)
+      );
+    });
+
+    if (!event) {
+      return res.status(404).json({ error: 'Wydarzenie nie znalezione' });
+    }
+
+    // Sprawdź czy już nie jest zsynchronizowane
+    if (event.google_event_id) {
+      return res.status(400).json({ error: 'To wydarzenie jest już zsynchronizowane z Google Calendar' });
+    }
+
+    // Pobierz tokeny
+    const integration = await new Promise((resolve, reject) => {
+      db.get(
+        'SELECT * FROM calendar_integrations WHERE user_id = ? AND provider = ?',
+        [req.user.userId, 'google'],
+        (err, row) => err ? reject(err) : resolve(row)
+      );
+    });
+
+    if (!integration) {
+      return res.status(400).json({ error: 'Brak połączenia z Google Calendar' });
+    }
+
+    oauth2Client.setCredentials({
+      access_token: integration.access_token,
+      refresh_token: integration.refresh_token,
+      expiry_date: integration.expires_at
+    });
+
+    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+
+    // Przygotuj datetime
+    const eventDateTime = event.event_time 
+      ? `${event.event_date}T${event.event_time}:00`
+      : `${event.event_date}T00:00:00`;
+
+    const endDateTime = event.event_time
+      ? `${event.event_date}T${event.event_time}:00`
+      : `${event.event_date}T23:59:59`;
+
+    // Utwórz event w Google Calendar
+    const googleEvent = {
+      summary: event.title,
+      description: event.description || '',
+      start: event.event_time ? {
+        dateTime: eventDateTime,
+        timeZone: 'Europe/Warsaw',
+      } : {
+        date: event.event_date,
+      },
+      end: event.event_time ? {
+        dateTime: endDateTime,
+        timeZone: 'Europe/Warsaw',
+      } : {
+        date: event.event_date,
+      }
+    };
+
+    const response = await calendar.events.insert({
+      calendarId: 'primary',
+      resource: googleEvent,
+    });
+
+    // Zapisz Google Event ID
+    await new Promise((resolve, reject) => {
+      db.run(
+        'UPDATE events SET google_event_id = ? WHERE id = ?',
+        [response.data.id, eventId],
+        (err) => err ? reject(err) : resolve()
+      );
+    });
+
+    res.json({ 
+      success: true, 
+      googleEventId: response.data.id,
+      message: 'Wydarzenie zostało wyeksportowane do Google Calendar'
+    });
+  } catch (error) {
+    console.error('Error exporting to Google Calendar:', error);
+    res.status(500).json({ error: 'Błąd eksportu do Google Calendar' });
+  }
+});
+
+// Odłącz Google Calendar
+app.delete('/api/calendar/google/disconnect', authenticateToken, async (req, res) => {
+  try {
+    await new Promise((resolve, reject) => {
+      db.run(
+        'DELETE FROM calendar_integrations WHERE user_id = ? AND provider = ?',
+        [req.user.userId, 'google'],
+        (err) => err ? reject(err) : resolve()
+      );
+    });
+
+    res.json({ success: true, message: 'Rozłączono z Google Calendar' });
+  } catch (error) {
+    console.error('Error disconnecting Google Calendar:', error);
+    res.status(500).json({ error: 'Błąd podczas rozłączania' });
+  }
+});
+
+// ==================== iCAL / WEBCAL FEED ====================
+
+// Wygeneruj token dla webcal feed (tylko admin)
+app.post('/api/calendar/generate-feed-token', authenticateToken, requireAdmin, (req, res) => {
+  const feedToken = crypto.randomBytes(32).toString('hex');
+
+  db.run(
+    'UPDATE families SET calendar_token = ? WHERE id = ?',
+    [feedToken, req.user.familyId],
+    (err) => {
+      if (err) {
+        console.error('Error generating feed token:', err);
+        return res.status(500).json({ error: 'Błąd generowania tokenu' });
+      }
+      
+      const protocol = req.protocol === 'https' ? 'webcal' : 'http';
+      const host = req.get('host');
+      const feedUrl = `${protocol}://${host}/api/calendar/ical/feed/${req.user.familyId}/${feedToken}`;
+      
+      res.json({ 
+        feedUrl, 
+        feedToken,
+        instructions: 'Użyj tego linku w dowolnej aplikacji kalendarza wspierającej subskrypcję webcal/ical'
+      });
+    }
+  );
+});
+
+// Endpoint webcal feed
+app.get('/api/calendar/ical/feed/:familyId/:token', async (req, res) => {
+  const { familyId, token } = req.params;
+
+  try {
+    // Weryfikuj token
+    const family = await new Promise((resolve, reject) => {
+      db.get(
+        'SELECT * FROM families WHERE id = ? AND calendar_token = ?',
+        [familyId, token],
+        (err, row) => err ? reject(err) : resolve(row)
+      );
+    });
+
+    if (!family) {
+      return res.status(404).send('Invalid calendar feed URL');
+    }
+
+    // Pobierz wydarzenia z ostatnich 30 dni i kolejnych 180 dni
+    const timeMin = new Date();
+    timeMin.setDate(timeMin.getDate() - 30);
+    const timeMax = new Date();
+    timeMax.setDate(timeMax.getDate() + 180);
+
+    const events = await new Promise((resolve, reject) => {
+      db.all(
+        `SELECT e.*, u.name as user_name, u.color as user_color
+         FROM events e
+         JOIN users u ON e.user_id = u.id
+         WHERE e.family_id = ? 
+         AND e.event_date BETWEEN ? AND ?
+         ORDER BY e.event_date, e.event_time`,
+        [
+          familyId, 
+          timeMin.toISOString().split('T')[0], 
+          timeMax.toISOString().split('T')[0]
+        ],
+        (err, rows) => err ? reject(err) : resolve(rows)
+      );
+    });
+
+    // Generuj iCal format
+    const now = new Date();
+    const dtstamp = now.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+
+    let icsContent = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Family Hub//Calendar//EN
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:${family.name}
+X-WR-TIMEZONE:Europe/Warsaw
+X-WR-CALDESC:Kalendarz rodzinny ${family.name}
+X-PUBLISHED-TTL:PT1H
+`;
+
+    for (const event of events) {
+      const uid = event.ical_uid || `${event.id}@familyhub`;
+      const dtstart = event.event_time
+        ? `${event.event_date.replace(/-/g, '')}T${event.event_time.replace(/:/g, '')}00`
+        : event.event_date.replace(/-/g, '');
+      
+      const dtend = event.event_time
+        ? `${event.event_date.replace(/-/g, '')}T${event.event_time.replace(/:/g, '')}00`
+        : event.event_date.replace(/-/g, '');
+
+      const summary = event.title.replace(/\n/g, '\\n');
+      const description = (event.description || '')
+        .replace(/\n/g, '\\n')
+        .substring(0, 500); // Ogranicz długość
+
+      icsContent += `BEGIN:VEVENT
+UID:${uid}
+DTSTAMP:${dtstamp}
+DTSTART${event.event_time ? '' : ';VALUE=DATE'}:${dtstart}
+DTEND${event.event_time ? '' : ';VALUE=DATE'}:${dtend}
+SUMMARY:${summary}
+DESCRIPTION:${description}
+CATEGORIES:${event.user_name}
+COLOR:${event.user_color}
+STATUS:CONFIRMED
+SEQUENCE:0
+END:VEVENT
+`;
+    }
+
+    icsContent += 'END:VCALENDAR';
+
+    res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+    res.setHeader('Content-Disposition', 'inline; filename="calendar.ics"');
+    res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    res.send(icsContent);
+  } catch (error) {
+    console.error('Error generating calendar feed:', error);
+    res.status(500).send('Error generating calendar feed');
+  }
+});
+
+// Export pojedynczego wydarzenia jako .ics
+app.get('/api/calendar/ical/export/:eventId', authenticateToken, async (req, res) => {
+  const { eventId } = req.params;
+
+  try {
+    const event = await new Promise((resolve, reject) => {
+      db.get(
+        'SELECT * FROM events WHERE id = ? AND family_id = ?',
+        [eventId, req.user.familyId],
+        (err, row) => err ? reject(err) : resolve(row)
+      );
+    });
+
+    if (!event) {
+      return res.status(404).json({ error: 'Wydarzenie nie znalezione' });
+    }
+
+    const now = new Date();
+    const dtstamp = now.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+    const uid = event.ical_uid || `${event.id}@familyhub`;
+    
+    const dtstart = event.event_time
+      ? `${event.event_date.replace(/-/g, '')}T${event.event_time.replace(/:/g, '')}00`
+      : event.event_date.replace(/-/g, '');
+    
+    const dtend = event.event_time
+      ? `${event.event_date.replace(/-/g, '')}T${event.event_time.replace(/:/g, '')}00`
+      : event.event_date.replace(/-/g, '');
+
+    const icsContent = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Family Hub//Calendar//EN
+BEGIN:VEVENT
+UID:${uid}
+DTSTAMP:${dtstamp}
+DTSTART${event.event_time ? '' : ';VALUE=DATE'}:${dtstart}
+DTEND${event.event_time ? '' : ';VALUE=DATE'}:${dtend}
+SUMMARY:${event.title}
+DESCRIPTION:${event.description || ''}
+STATUS:CONFIRMED
+END:VEVENT
+END:VCALENDAR`;
+
+    res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="event-${event.id}.ics"`);
+    res.send(icsContent);
+  } catch (error) {
+    console.error('Error generating iCal:', error);
+    res.status(500).json({ error: 'Błąd generowania pliku iCal' });
+  }
+});
+
+// Status integracji użytkownika
+app.get('/api/calendar/integrations/status', authenticateToken, async (req, res) => {
+  try {
+    const integration = await new Promise((resolve, reject) => {
+      db.get(
+        'SELECT provider, created_at FROM calendar_integrations WHERE user_id = ?',
+        [req.user.userId],
+        (err, row) => err ? reject(err) : resolve(row)
+      );
+    });
+
+    const family = await new Promise((resolve, reject) => {
+      db.get(
+        'SELECT calendar_token FROM families WHERE id = ?',
+        [req.user.familyId],
+        (err, row) => err ? reject(err) : resolve(row)
+      );
+    });
+
+    res.json({
+      google: integration && integration.provider === 'google' ? {
+        connected: true,
+        connectedAt: integration.created_at
+      } : {
+        connected: false
+      },
+      webcal: {
+        enabled: !!family?.calendar_token
+      }
+    });
+  } catch (error) {
+    console.error('Error checking integration status:', error);
+    res.status(500).json({ error: 'Błąd sprawdzania statusu integracji' });
+  }
 });
 // Start server
 app.listen(PORT, () => {

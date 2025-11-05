@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
 import Auth from './components/Auth';
-import Calendar from './components/Calendar';
+import Calendar from './components/CalendarEnhanced';
 import Shopping from './components/Shopping';
 import Todos from './components/Todos';
 import Meals from './components/Meals';
