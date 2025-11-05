@@ -2,4 +2,4 @@
 .env
 
 # Ignoruj katalog z danymi
-/data
+/data/family-hub.db
