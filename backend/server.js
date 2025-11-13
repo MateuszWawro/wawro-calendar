@@ -14,7 +14,7 @@ const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'zmien-to-na-swoj-super-tajny-klucz-production';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3001/api/calendar/google/callback';
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3001/api/calendar/google/callback' || 'http://192.168.1.29:3001/api/calendar/google/callback';
 
 const oauth2Client = new google.auth.OAuth2(
   GOOGLE_CLIENT_ID,
@@ -30,10 +30,11 @@ console.log('Redirect:', GOOGLE_REDIRECT_URI);
 
 // Middleware
 app.use(cors({
-  origin: ['http://localhost:3000', 'https://family.wawro.ovh', 'http://family.wawro.ovh'],
+  origin: ['http://localhost:3000', 'http://192.168.1.29:3000', 'https://family.wawro.ovh', 'http://family.wawro.ovh'],
   credentials: true
 }));
 app.use(express.json());
+
 
 // Database initialization
 const dbPath = process.env.DB_PATH || './data/family-hub.db';
@@ -1680,8 +1681,9 @@ app.get('/api/calendar/integrations/status', authenticateToken, async (req, res)
   }
 });
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📍 Health check: http://localhost:${PORT}/api/health`);
+  console.log(`🌐 Dostępny też po IP: http://192.168.1.29:${PORT}/api/health`);
   console.log(`🗄️  Database: ${dbPath}`);
 });
